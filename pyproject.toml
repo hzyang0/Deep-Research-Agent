@@ -1,0 +1,9 @@
+[project]
+name = "deep-research-agent"
+version = "0.1.0"
+description = "一个采用规划-执行-反思架构的深度研究 Agent"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

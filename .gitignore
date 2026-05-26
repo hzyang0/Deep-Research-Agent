@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.DS_Store
+reports/
+*.log
+
+# —— 个人备考材料,不进仓库(避免面试官看到答题稿,且属于私人学习笔记) ——
+docs/STUDY_GUIDE.md
+docs/INTERVIEW.md
+docs/EXPERIMENTS.md

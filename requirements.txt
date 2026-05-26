@@ -1,0 +1,9 @@
+# LLM 调用(OpenAI 兼容接口;换 Claude/本地模型只需改 base_url 和模型名)
+openai>=1.0.0
+# 网页抓取
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+# 免费搜索(无需 API key)
+ddgs>=9.0.0
+# 测试
+pytest>=8.0.0
