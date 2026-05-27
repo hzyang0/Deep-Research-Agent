@@ -41,6 +41,12 @@ try:
 except ImportError:  # pragma: no cover
     OpenAI = None  # 允许在没装 SDK 的环境下仅做静态检查
 
+# 模块导入时即加载 .env,确保后续 os.getenv 能读到用户配置。
+# CLI 和 Web 都会 import 到本模块,所以这一处加载就覆盖了所有入口。
+from ..config import load_env
+
+load_env()
+
 
 class ModelTier(str, Enum):
     """模型分级。
