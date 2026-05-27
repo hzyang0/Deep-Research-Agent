@@ -4,6 +4,8 @@
 
 > 本项目的设计目标不是"又一个 LangChain demo"，而是一个**经得起工程追问**的 Agent：有明确的失败模式处理、有防死循环机制、有成本优化、有可量化的评估体系。
 
+![界面预览](docs/assets/ui_preview.png)
+
 ## 它解决什么问题
 
 给定问题 → 自主研究 → 输出带引用的报告：
@@ -22,6 +24,7 @@
 - **优雅降级**：搜索/抓取失败时返回空结果而非崩溃，让 Agent 把对应子问题标记为信息不足并继续。
 - **可量化评估体系**：内置 eval 框架，度量引用准确率、覆盖度、token 成本，支持参数对比实验。
 - **零门槛可验证**：默认搜索用 DuckDuckGo（无需 key）；核心控制流有 mock 测试，无需 API key、不联网即可 `pytest` 验证逻辑。
+- **实时可视化界面**：FastAPI + SSE 后端 + 零构建单页前端，浏览器里实时观察 Agent 的规划、检索、反思全过程，最后阅读带引用溯源的报告。表现层与核心逻辑解耦，CLI 与 Web 共用同一套 Agent。
 
 ## 架构
 
@@ -70,7 +73,13 @@ eval/
 ├── dataset/research_questions.json   # 评估数据集（问题 + 预期关键点）
 └── run_eval.py                       # 评估运行脚本
 
-tests/test_agent.py      # mock 测试：无需 key/联网即可验证控制流
+web/                     # 实时可视化界面（表现层，不含业务逻辑）
+├── server.py            # FastAPI 后端：SSE 流式推送 Agent 事件
+└── static/index.html    # 零构建单页前端：研究终端风格 UI
+
+tests/
+├── test_agent.py        # mock 测试：核心控制流（无需 key/联网）
+└── test_web.py          # mock 测试：Web SSE 链路
 docs/                    # 设计文档
 ```
 
@@ -84,16 +93,20 @@ pip install -r requirements.txt
 cp .env.example .env
 export OPENAI_API_KEY=sk-...        # 或在 .env 里填好
 
-# 3. 运行一次研究
+# 3. 运行一次研究（命令行）
 python -m deep_research "对比 2024-2025 年主流开源向量数据库的优劣"
 
-# 4. 调参运行
+# 4. 启动 Web 界面（推荐，可实时观察 Agent 思考过程）
+uvicorn web.server:app --reload --port 8000
+# 然后浏览器打开 http://localhost:8000
+
+# 5. 调参运行
 python -m deep_research "你的问题" --max-subq 4 --max-search 2 --top-k 3
 
-# 5. 跑评估
+# 6. 跑评估
 python eval/run_eval.py --limit 2          # 先跑 2 个用例省钱调试
 
-# 6. 跑测试（无需 key、不联网）
+# 7. 跑测试（无需 key、不联网，含核心逻辑 + Web 链路）
 pytest tests/ -v
 ```
 
@@ -134,4 +147,5 @@ pytest tests/ -v
 ## 文档导航
 
 - [docs/DESIGN.md](docs/DESIGN.md) — 详细架构与设计权衡
+- [docs/WEB_ARCHITECTURE.md](docs/WEB_ARCHITECTURE.md) — Web 界面分层与实时通信选型
 - [examples/sample_run.md](examples/sample_run.md) — 示例运行输出与产出形态

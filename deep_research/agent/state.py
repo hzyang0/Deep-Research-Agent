@@ -25,8 +25,16 @@ Agent 状态 (State)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from ..tools.fetch import Finding
+
+# 事件回调的类型:接收 (事件类型, 数据字典)。
+# 设计意图:这是连接"核心 Agent"和"任意前端(CLI/Web)"的唯一桥梁。
+# Agent 内部只管发事件,完全不知道接收方是终端还是浏览器 —— 这就是
+# 表现层(presentation)与业务逻辑(domain)解耦。面试谈资:
+# "我的 Agent 不依赖任何特定 UI,CLI 和 Web 共用同一套核心,只是事件的消费者不同。"
+EventSink = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass
@@ -51,10 +59,30 @@ class ResearchState:
     # 全程的轨迹日志,用于可观测性 / 调试 / 面试演示"它到底做了什么"。
     trace: list[str] = field(default_factory=list)
 
+    # 可选的事件回调。为 None 时(默认,CLI 场景)行为和原来完全一致;
+    # Web 场景会注入一个把事件转成 SSE 推给浏览器的回调。
+    event_sink: EventSink | None = None
+
     def log(self, message: str) -> None:
         """记录一条轨迹。同时打印,方便实时观察 Agent 的"思考过程"。"""
         self.trace.append(message)
         print(message)
+        # 把纯文本日志也作为一种事件发出去,Web 端可直接展示。
+        self.emit("log", {"message": message})
+
+    def emit(self, event_type: str, data: dict[str, Any]) -> None:
+        """发出一个结构化事件(如果注册了 sink)。
+
+        相比纯文本 log,结构化事件让前端能精细渲染:比如 "plan" 事件带着
+        子问题列表,前端就能画成一组卡片,而不只是打印一行字。
+        失败时静默吞掉异常 —— 事件推送绝不能影响核心研究流程(降级原则)。
+        """
+        if self.event_sink is None:
+            return
+        try:
+            self.event_sink(event_type, data)
+        except Exception:  # noqa: BLE001 —— UI 推送失败不应中断研究
+            pass
 
     def all_findings(self) -> list[Finding]:
         """把所有子问题的发现摊平成一个列表,供报告生成阶段使用。"""

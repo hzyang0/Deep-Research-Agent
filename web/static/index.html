@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Deep Research Agent</title>
+<!--
+  前端单页 (Single-File Frontend)
+  ================================
+  设计取向:深色"研究终端"风格 —— 沉稳、专业,营造"看着 Agent 在工作"的科技感。
+  刻意不用 React,保持零构建:浏览器直接打开即可,clone 项目无需 npm install。
+  通过 SSE 接收后端推送的结构化事件,实时把 Agent 的思考过程渲染成时间线 +
+  子问题卡片,最后流式展示带引用的报告。
+-->
+<style>
+  /* ---------- 设计变量(集中管理,呼应后端的"配置集中"思路) ---------- */
+  :root {
+    --bg: #0d1117;
+    --bg-elev: #161b22;
+    --bg-elev2: #1c2230;
+    --border: #2a3038;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --text-faint: #6e7681;
+    --accent: #f0a868;      /* 琥珀:主强调,用于"思考/进行中" */
+    --accent2: #5fb3c4;     /* 青:次强调,用于"完成/数据" */
+    --green: #5cba7d;
+    --red: #e5736b;
+    --mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", "Georgia", serif;
+    --sans: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    /* 细微的网格纹理背景,增加"终端"氛围 */
+    background-image:
+      radial-gradient(circle at 15% 20%, rgba(240,168,104,0.04), transparent 40%),
+      radial-gradient(circle at 85% 80%, rgba(95,179,196,0.04), transparent 40%);
+    min-height: 100vh;
+  }
+
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  /* ---------- 顶部标题 ---------- */
+  header { margin-bottom: 28px; }
+  .brand {
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 2px;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-size: 34px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+  }
+  .subtitle { color: var(--text-dim); font-size: 15px; margin-top: 4px; }
+
+  /* ---------- 搜索输入区 ---------- */
+  .composer {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 24px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+  }
+  .composer textarea {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 17px;
+    resize: none;
+    outline: none;
+    min-height: 52px;
+  }
+  .composer textarea::placeholder { color: var(--text-faint); }
+
+  .composer-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .knobs { display: flex; gap: 16px; flex-wrap: wrap; }
+  .knob { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+  .knob label { font-family: var(--mono); }
+  .knob input {
+    width: 52px;
+    background: var(--bg-elev2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  button.run {
+    background: var(--accent);
+    color: #1a1208;
+    border: none;
+    border-radius: 9px;
+    padding: 10px 22px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.2s;
+  }
+  button.run:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(240,168,104,0.3); }
+  button.run:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ---------- 阶段进度条 ---------- */
+  .phases { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
+  .phase-pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    color: var(--text-faint);
+    transition: all 0.3s;
+  }
+  .phase-pill.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(240,168,104,0.08);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .phase-pill.done { color: var(--green); border-color: rgba(92,186,125,0.4); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+  /* ---------- 主体两栏 ---------- */
+  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .panel-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .panel-body { padding: 16px 18px; max-height: 560px; overflow-y: auto; }
+
+  /* ---------- 子问题卡片 ---------- */
+  .subq {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    overflow: hidden;
+    transition: border-color 0.3s;
+  }
+  .subq.active { border-color: var(--accent); }
+  .subq.done { border-color: rgba(95,179,196,0.4); }
+  .subq-title {
+    padding: 11px 14px;
+    font-size: 14px;
+    font-weight: 500;
+    background: var(--bg-elev2);
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .subq-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-faint); margin-top: 7px; flex-shrink: 0;
+  }
+  .subq.active .subq-dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .subq.done .subq-dot { background: var(--accent2); }
+  .subq-meta { font-family: var(--mono); font-size: 11px; color: var(--text-faint); padding: 2px 14px 0; }
+  .finding {
+    padding: 9px 14px 9px 22px;
+    font-size: 13px;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+    position: relative;
+  }
+  .finding::before {
+    content: "›"; position: absolute; left: 10px; color: var(--accent2);
+  }
+  .finding a { color: var(--accent2); text-decoration: none; font-size: 11px; font-family: var(--mono); }
+  .finding a:hover { text-decoration: underline; }
+  .search-line {
+    font-family: var(--mono); font-size: 11px; color: var(--accent);
+    padding: 6px 14px; border-top: 1px solid var(--border); opacity: 0.85;
+  }
+
+  /* ---------- 日志流 ---------- */
+  .log-stream { font-family: var(--mono); font-size: 12px; line-height: 1.8; }
+  .log-line { color: var(--text-dim); white-space: pre-wrap; word-break: break-word; }
+  .log-line.cost { color: var(--accent2); }
+
+  /* ---------- 报告 ---------- */
+  #reportPanel { grid-column: 1 / -1; display: none; }
+  .report-body {
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.85;
+    max-height: none;
+    color: #d4dbe2;
+  }
+  .report-body h1, .report-body h2, .report-body h3 {
+    font-family: var(--sans); color: var(--text); margin: 22px 0 10px;
+  }
+  .report-body h2 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .report-body p { margin: 10px 0; }
+  .report-body sup.cite {
+    color: var(--accent); font-family: var(--mono); font-size: 11px;
+    cursor: pointer; padding: 0 1px;
+  }
+  .sources { margin-top: 8px; }
+  .source-item {
+    font-size: 13px; padding: 8px 0; border-top: 1px solid var(--border);
+    display: flex; gap: 10px;
+  }
+  .source-num { font-family: var(--mono); color: var(--accent); flex-shrink: 0; }
+  .source-item a { color: var(--accent2); text-decoration: none; word-break: break-all; }
+  .source-item a:hover { text-decoration: underline; }
+
+  /* ---------- 成本徽章 ---------- */
+  .cost-badge {
+    font-family: var(--mono); font-size: 11px; color: var(--accent2);
+    background: rgba(95,179,196,0.1); padding: 3px 8px; border-radius: 6px;
+  }
+
+  .empty-hint { color: var(--text-faint); font-size: 13px; font-style: italic; }
+  .banner {
+    background: rgba(229,115,107,0.12); border: 1px solid rgba(229,115,107,0.4);
+    color: #f0b5b0; padding: 10px 14px; border-radius: 10px; font-size: 13px;
+    margin-bottom: 18px; display: none;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">◆ Deep Research Agent</div>
+    <h1>深度研究助手</h1>
+    <div class="subtitle">规划 · 检索 · 反思 · 带引用成文 —— 实时观察 Agent 的每一步推理</div>
+  </header>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="composer">
+    <textarea id="question" rows="2" placeholder="输入一个研究问题，例如：对比 2024-2025 年主流开源向量数据库的优劣"></textarea>
+    <div class="composer-bottom">
+      <div class="knobs">
+        <div class="knob"><label>子问题上限</label><input type="number" id="maxSubq" value="4" min="1" max="8"></div>
+        <div class="knob"><label>每问搜索次数</label><input type="number" id="maxSearch" value="2" min="1" max="5"></div>
+        <div class="knob"><label>每次抓取数</label><input type="number" id="topK" value="4" min="1" max="8"></div>
+      </div>
+      <button class="run" id="runBtn">开始研究</button>
+    </div>
+  </div>
+
+  <div class="phases" id="phases">
+    <div class="phase-pill" data-phase="planning">① 规划</div>
+    <div class="phase-pill" data-phase="researching">② 检索</div>
+    <div class="phase-pill" data-phase="reflecting">③ 反思</div>
+    <div class="phase-pill" data-phase="writing">④ 成文</div>
+  </div>
+
+  <div class="layout">
+    <!-- 左:子问题与发现 -->
+    <div class="panel">
+      <div class="panel-head"><span>研究进展 · Sub-questions</span></div>
+      <div class="panel-body" id="subqPanel">
+        <div class="empty-hint">尚未开始。输入问题后，这里会实时显示 Agent 规划出的子问题与收集到的发现。</div>
+      </div>
+    </div>
+
+    <!-- 右:实时日志 -->
+    <div class="panel">
+      <div class="panel-head"><span>推理轨迹 · Trace</span></div>
+      <div class="panel-body log-stream" id="logPanel">
+        <div class="empty-hint">Agent 的实时思考日志会流式出现在这里。</div>
+      </div>
+    </div>
+
+    <!-- 报告(完成后出现,横跨两栏) -->
+    <div class="panel" id="reportPanel">
+      <div class="panel-head">
+        <span>研究报告 · Report</span>
+        <span class="cost-badge" id="costBadge"></span>
+      </div>
+      <div class="panel-body">
+        <div class="report-body" id="reportBody"></div>
+        <h3 style="font-family:var(--sans);margin-top:26px;font-size:15px;color:var(--text-dim);">参考来源</h3>
+        <div class="sources" id="sourcesList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   前端逻辑:通过 SSE 接收后端事件,实时渲染。
+   核心是一个事件分发器 handleEvent(),按事件 type 更新对应 UI。
+   ============================================================ */
+
+const $ = (id) => document.getElementById(id);
+const subqEls = {};   // 子问题文本 -> DOM 元素,便于增量更新
+
+function setPhase(name) {
+  const order = ["planning", "researching", "reflecting", "writing"];
+  const idx = order.indexOf(name);
+  document.querySelectorAll(".phase-pill").forEach((el) => {
+    const p = el.dataset.phase;
+    const pIdx = order.indexOf(p);
+    el.classList.remove("active", "done");
+    if (pIdx < idx) el.classList.add("done");
+    else if (pIdx === idx) el.classList.add("active");
+  });
+}
+
+function addLog(message, isCost) {
+  const panel = $("logPanel");
+  if (panel.querySelector(".empty-hint")) panel.innerHTML = "";
+  const line = document.createElement("div");
+  line.className = "log-line" + (isCost ? " cost" : "");
+  line.textContent = message;
+  panel.appendChild(line);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function addSubq(text) {
+  const panel = $("subqPanel");
+  if (panel.querySelector(".empty-hint")) panel.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "subq";
+  el.innerHTML = `
+    <div class="subq-title"><span class="subq-dot"></span><span>${escapeHtml(text)}</span></div>
+    <div class="subq-meta"></div>`;
+  panel.appendChild(el);
+  subqEls[text] = el;
+  return el;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function handleEvent(ev) {
+  switch (ev.type) {
+    case "start":
+      break;
+    case "phase":
+      setPhase(ev.name);
+      break;
+    case "plan":
+      ev.sub_questions.forEach(addSubq);
+      break;
+    case "subq_start": {
+      const el = subqEls[ev.sub_question];
+      if (el) el.classList.add("active");
+      break;
+    }
+    case "search": {
+      const el = subqEls[ev.sub_question];
+      if (el) {
+        const line = document.createElement("div");
+        line.className = "search-line";
+        line.textContent = `🔎 第${ev.round}轮检索：${ev.query}`;
+        el.appendChild(line);
+      }
+      break;
+    }
+    case "finding": {
+      const el = subqEls[ev.sub_question];
+      if (el) {
+        const f = document.createElement("div");
+        f.className = "finding";
+        f.innerHTML = `${escapeHtml(ev.content)} <a href="${escapeHtml(ev.url)}" target="_blank" rel="noopener">↗ 来源</a>`;
+        el.appendChild(f);
+      }
+      break;
+    }
+    case "subq_done": {
+      const el = subqEls[ev.sub_question];
+      if (el) {
+        el.classList.remove("active");
+        el.classList.add("done");
+        const reason = ev.reason === "enough" ? "信息充分" : "达搜索上限";
+        el.querySelector(".subq-meta").textContent = `✓ ${reason} · 收录 ${ev.count} 条`;
+      }
+      break;
+    }
+    case "gaps":
+      ev.gaps.forEach(addSubq);
+      break;
+    case "log":
+      addLog(ev.message, ev.message.includes("💰"));
+      break;
+    case "done":
+      renderReport(ev);
+      setPhase("__finished__");
+      document.querySelectorAll(".phase-pill").forEach((el) => el.classList.add("done"));
+      break;
+    case "error":
+      showBanner("研究出错：" + ev.message);
+      break;
+    case "end":
+      finish();
+      break;
+  }
+}
+
+/* 把报告里的 [n] 渲染成上标引用,并填充来源列表 */
+function renderReport(data) {
+  $("reportPanel").style.display = "block";
+  let html = escapeHtml(data.report || "");
+  // 简单的 markdown 标题处理
+  html = html
+    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
+    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  // [n] -> 上标引用
+  html = html.replace(/\[(\d+)\]/g, '<sup class="cite">[$1]</sup>');
+  // 段落
+  html = html.split(/\n\n+/).map((p) => {
+    if (p.startsWith("<h")) return p;
+    if (p.includes("参考来源")) return "";
+    return "<p>" + p.replace(/\n/g, "<br>") + "</p>";
+  }).join("");
+  $("reportBody").innerHTML = html;
+
+  // 来源列表
+  const list = $("sourcesList");
+  list.innerHTML = "";
+  (data.sources || []).forEach((s, i) => {
+    const item = document.createElement("div");
+    item.className = "source-item";
+    item.innerHTML = `<span class="source-num">[${i + 1}]</span>
+      <span>${escapeHtml(s.title)} — <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.url)}</a></span>`;
+    list.appendChild(item);
+  });
+
+  // 成本徽章
+  const u = data.usage || {};
+  $("costBadge").textContent = `${u.calls || 0} 次调用 · ${u.total_tokens || 0} tokens`;
+  $("reportPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function showBanner(msg) {
+  const b = $("banner");
+  b.textContent = msg;
+  b.style.display = "block";
+}
+
+let running = false;
+function finish() {
+  running = false;
+  $("runBtn").disabled = false;
+  $("runBtn").textContent = "开始研究";
+}
+
+async function startResearch() {
+  if (running) return;
+  const question = $("question").value.trim();
+  if (!question) { showBanner("请先输入研究问题。"); return; }
+
+  // 重置 UI
+  running = true;
+  $("banner").style.display = "none";
+  $("runBtn").disabled = true;
+  $("runBtn").textContent = "研究中…";
+  $("subqPanel").innerHTML = '<div class="empty-hint">规划中…</div>';
+  $("logPanel").innerHTML = "";
+  $("reportPanel").style.display = "none";
+  Object.keys(subqEls).forEach((k) => delete subqEls[k]);
+
+  const body = {
+    question,
+    max_subquestions: parseInt($("maxSubq").value) || 4,
+    max_searches_per_subq: parseInt($("maxSearch").value) || 2,
+    results_per_search: parseInt($("topK").value) || 4,
+  };
+
+  try {
+    // 用 fetch + ReadableStream 解析 SSE(比 EventSource 更灵活,支持 POST)
+    const resp = await fetch("/api/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error("服务器返回 " + resp.status);
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE 以 \n\n 分隔消息
+      const parts = buf.split("\n\n");
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.trim();
+        if (line.startsWith("data:")) {
+          const json = line.slice(5).trim();
+          try { handleEvent(JSON.parse(json)); } catch (e) { /* 忽略半包 */ }
+        }
+      }
+    }
+  } catch (err) {
+    showBanner("连接失败：" + err.message + "（请确认后端已启动且已配置 API key）");
+  } finally {
+    finish();
+  }
+}
+
+$("runBtn").addEventListener("click", startResearch);
+$("question").addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") startResearch();
+});
+
+// 启动时检查后端是否配置好 key
+fetch("/api/health").then((r) => r.json()).then((h) => {
+  if (!h.llm_configured) {
+    showBanner("⚠️ 后端尚未检测到 API key。请在 .env 中配置 OPENAI_API_KEY 后重启服务。");
+  }
+}).catch(() => {});
+</script>
+</body>
+</html>
