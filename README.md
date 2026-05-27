@@ -24,7 +24,7 @@
 - **优雅降级**：搜索/抓取失败时返回空结果而非崩溃，让 Agent 把对应子问题标记为信息不足并继续。
 - **可量化评估体系**：内置 eval 框架，度量引用准确率、覆盖度、token 成本，支持参数对比实验。
 - **零门槛可验证**：默认搜索用 DuckDuckGo（无需 key）；核心控制流有 mock 测试，无需 API key、不联网即可 `pytest` 验证逻辑。
-- **实时可视化界面**：FastAPI + SSE 后端 + 零构建单页前端，浏览器里实时观察 Agent 的规划、检索、反思全过程，最后阅读带引用溯源的报告。表现层与核心逻辑解耦，CLI 与 Web 共用同一套 Agent。
+- **多轮研究对话界面**：React 聊天界面（CDN 零构建）+ FastAPI/WebSocket 后端。不止"问一次得一份报告"——出报告后可继续追问、要求深入某点、补充新角度。核心是**意图分类**：追问直接用已积累发现回答（省钱），要深入才触发定向检索。会话通过 SQLite 持久化。表现层与核心逻辑解耦，CLI 与 Web 共用同一套 Agent。
 
 ## 架构
 
@@ -73,13 +73,18 @@ eval/
 ├── dataset/research_questions.json   # 评估数据集（问题 + 预期关键点）
 └── run_eval.py                       # 评估运行脚本
 
-web/                     # 实时可视化界面（表现层，不含业务逻辑）
-├── server.py            # FastAPI 后端：SSE 流式推送 Agent 事件
-└── static/index.html    # 零构建单页前端：研究终端风格 UI
+web/                     # 多轮研究对话界面（表现层，不含业务逻辑）
+├── server.py            # FastAPI + WebSocket：双向通信，事件实时推送
+└── static/index.html    # React 聊天界面（CDN 零构建）
+
+deep_research/agent/
+├── conversation.py      # 会话层：意图路由 + 跨轮发现复用 + SQLite 持久化
+└── intent.py            # 意图分类：NEW_RESEARCH/DEEPEN/FOLLOW_UP/REFINE
 
 tests/
-├── test_agent.py        # mock 测试：核心控制流（无需 key/联网）
-└── test_web.py          # mock 测试：Web SSE 链路
+├── test_agent.py        # 核心控制流（无需 key/联网）
+├── test_conversation.py # 会话层：意图路由、发现复用、持久化
+└── test_web.py          # WebSocket 多轮对话链路
 docs/                    # 设计文档
 ```
 
@@ -96,9 +101,10 @@ export OPENAI_API_KEY=sk-...        # 或在 .env 里填好
 # 3. 运行一次研究（命令行）
 python -m deep_research "对比 2024-2025 年主流开源向量数据库的优劣"
 
-# 4. 启动 Web 界面（推荐，可实时观察 Agent 思考过程）
+# 4. 启动 Web 界面（推荐：多轮研究对话，可追问/深入）
 uvicorn web.server:app --reload --port 8000
 # 然后浏览器打开 http://localhost:8000
+# 先问一个研究问题出报告，再继续追问、要求深入某点、或补充新角度
 
 # 5. 调参运行
 python -m deep_research "你的问题" --max-subq 4 --max-search 2 --top-k 3

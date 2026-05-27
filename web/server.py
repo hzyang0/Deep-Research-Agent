@@ -1,117 +1,50 @@
 """
-Web 后端 (FastAPI + SSE)
-========================
+Web 后端 (FastAPI + WebSocket,多轮研究对话)
+=============================================
 
 设计意图
 --------
-把命令行的深度研究 Agent 包装成一个 Web 服务,让用户能在浏览器里实时看到
-Agent 的"思考过程"。这一层是**表现层(presentation)**,刻意做得很薄 ——
-它不包含任何研究逻辑,只负责:
-1. 接收前端的研究请求;
-2. 在后台线程跑 Agent,把 Agent 发出的结构化事件通过 SSE 实时推给浏览器;
-3. 托管前端静态文件。
+把多轮研究 Agent 暴露成一个 WebSocket 聊天服务。这一层是表现层,很薄 ——
+不含研究逻辑,只负责:连接管理、把前端消息转交给 ConversationSession、
+把 Session 产生的实时事件推回浏览器。
 
-为什么用 SSE 而不是 WebSocket(面试谈资)
---------------------------------------
-研究过程的数据流是**单向**的:后端不断把进度(规划→搜索→反思→报告)推给前端,
-前端不需要在研究过程中往回发消息。这正是 Server-Sent Events 的设计场景。
-SSE 基于普通 HTTP,实现简单、自动重连、无需额外协议握手。WebSocket 是双向的,
-功能更强但更重 —— 在"单向推送"场景下用它属于过度设计。
-"选择恰好够用的技术,而不是最酷的技术",本身就是工程成熟度的体现。
+为什么这次用 WebSocket 而非 SSE(关键面试谈资)
+----------------------------------------------
+需求从"单向看结果"升级为"多轮对话 + 实时追问/深入指令",数据流变成**双向**:
+前端要在会话中持续向后端发消息,后端也要持续推事件。SSE 只能服务器→浏览器单向,
+做双向得拼凑("SSE 收 + POST 发"),既别扭又难管理会话连接。WebSocket 是为
+双向、长连接、有状态会话设计的,正好匹配。
 
-为什么 Agent 跑在后台线程 + 队列(面试谈资)
-----------------------------------------
-Agent 的 run() 是同步阻塞的(里面是串行的网络请求)。如果直接在请求处理函数里跑,
-会阻塞事件循环。所以我们把 Agent 丢到后台线程跑,它产生的事件投递到一个线程安全
-队列,SSE 生成器从队列里取事件往外发。这是"同步阻塞任务 + 异步流式输出"的经典桥接。
+这是一次有据可依的技术演进:之前单向需求时我用 SSE(够用就好),现在双向需求
+明确了才升级到 WebSocket —— 选型由需求驱动,而不是追新。
+
+并发模型
+--------
+Agent 的 run() 是同步阻塞的。WebSocket 处理协程里不能直接跑它(会阻塞事件循环)。
+所以用 asyncio.to_thread 把整轮处理丢到线程池,事件通过 asyncio 队列桥接回
+协程再 await send_json。这是"同步阻塞任务 + 异步双向通道"的标准桥接。
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import os
-import queue
-import threading
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
-from deep_research.agent.agent import DeepResearchAgent
+from deep_research.agent.conversation import ConversationSession
 from deep_research.llm.client import LLMClient, LLMConfig
 
 app = FastAPI(title="Deep Research Agent")
-
 _STATIC_DIR = Path(__file__).parent / "static"
-
-
-class ResearchRequest(BaseModel):
-    """前端发来的研究请求。参数对应 Agent 的可调旋钮。"""
-
-    question: str
-    max_subquestions: int = 4
-    max_searches_per_subq: int = 2
-    results_per_search: int = 4
-
-
-def _run_agent_to_queue(req: ResearchRequest, q: "queue.Queue") -> None:
-    """在后台线程里跑 Agent,把每个事件投递到队列。
-
-    用一个特殊的 None 哨兵标记"研究结束",让 SSE 生成器知道何时收尾。
-    任何异常也转成一个 error 事件发出去,保证前端不会无限等待。
-    """
-    def sink(event_type: str, data: dict) -> None:
-        q.put((event_type, data))
-
-    try:
-        llm = LLMClient(LLMConfig())
-        agent = DeepResearchAgent(
-            llm=llm,
-            max_subquestions=req.max_subquestions,
-            max_searches_per_subq=req.max_searches_per_subq,
-            results_per_search=req.results_per_search,
-        )
-        agent.run(req.question, event_sink=sink)
-    except Exception as err:  # noqa: BLE001
-        q.put(("error", {"message": str(err)}))
-    finally:
-        q.put(None)  # 结束哨兵
-
-
-@app.post("/api/research")
-def research(req: ResearchRequest) -> StreamingResponse:
-    """启动一次研究,以 SSE 流式返回全过程事件。"""
-    q: "queue.Queue" = queue.Queue()
-    worker = threading.Thread(target=_run_agent_to_queue, args=(req, q), daemon=True)
-    worker.start()
-
-    def event_stream():
-        # SSE 格式:每条消息形如 "data: {json}\n\n"
-        while True:
-            item = q.get()
-            if item is None:  # 结束哨兵
-                yield "data: {\"type\": \"end\"}\n\n"
-                break
-            event_type, data = item
-            payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
-            yield f"data: {payload}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # 关闭 nginx 缓冲,保证实时性
-        },
-    )
+_DB_PATH = os.getenv("SESSIONS_DB", "sessions.db")
 
 
 @app.get("/api/health")
 def health() -> dict:
-    """健康检查 + 报告 LLM 是否已配置好(前端据此提示用户)。"""
     return {
         "status": "ok",
         "llm_configured": bool(os.getenv("OPENAI_API_KEY")),
@@ -120,11 +53,73 @@ def health() -> dict:
     }
 
 
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket) -> None:
+    """一条 WebSocket 连接 = 一段多轮研究会话。"""
+    await ws.accept()
+
+    # 每条连接持有一个会话。客户端可在首条消息里带 session_id 以恢复历史。
+    session: ConversationSession | None = None
+
+    try:
+        while True:
+            msg = await ws.receive_json()
+            user_text = (msg.get("message") or "").strip()
+            if not user_text:
+                continue
+
+            # 懒初始化会话(第一条消息时建立 / 恢复)
+            if session is None:
+                sid = msg.get("session_id")
+                if sid:
+                    session = await asyncio.to_thread(
+                        ConversationSession.load, sid, _DB_PATH
+                    )
+                if session is None:
+                    try:
+                        llm = LLMClient(LLMConfig())
+                    except Exception as err:  # noqa: BLE001
+                        await ws.send_json({"type": "error", "message": f"LLM 初始化失败:{err}"})
+                        continue
+                    session = ConversationSession(llm=llm)
+                await ws.send_json({"type": "session", "session_id": session.session_id})
+
+            # 用 asyncio 队列把"线程里产生的事件"桥接回"协程里 send"
+            queue: asyncio.Queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def sink(event_type: str, data: dict) -> None:
+                # 在工作线程里被调用,用 call_soon_threadsafe 安全投递到事件循环
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": event_type, **data})
+
+            # 启动后台处理这一轮
+            async def process():
+                result = await asyncio.to_thread(session.handle_message, user_text, sink)
+                await asyncio.to_thread(session.save, _DB_PATH)  # 持久化
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "turn_done", **result})
+
+            task = asyncio.create_task(process())
+
+            # 不断从队列取事件推给前端,直到本轮结束
+            while True:
+                event = await queue.get()
+                await ws.send_json(event)
+                if event.get("type") == "turn_done":
+                    break
+            await task
+
+    except WebSocketDisconnect:
+        # 连接断开,保存会话(若已建立)
+        if session is not None:
+            try:
+                await asyncio.to_thread(session.save, _DB_PATH)
+            except Exception:  # noqa: BLE001
+                pass
+
+
 @app.get("/")
 def index() -> FileResponse:
-    """返回前端单页。"""
     return FileResponse(_STATIC_DIR / "index.html")
 
 
-# 托管其它静态资源(目前前端是单文件,这一行为将来拆分留好余地)
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")

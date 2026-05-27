@@ -8,6 +8,8 @@ venv/
 .DS_Store
 reports/
 *.log
+sessions.db
+*.db
 
 # —— 个人备考材料,不进仓库(避免面试官看到答题稿,且属于私人学习笔记) ——
 docs/STUDY_GUIDE.md

@@ -5,551 +5,278 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Deep Research Agent</title>
 <!--
-  前端单页 (Single-File Frontend)
-  ================================
-  设计取向:深色"研究终端"风格 —— 沉稳、专业,营造"看着 Agent 在工作"的科技感。
-  刻意不用 React,保持零构建:浏览器直接打开即可,clone 项目无需 npm install。
-  通过 SSE 接收后端推送的结构化事件,实时把 Agent 的思考过程渲染成时间线 +
-  子问题卡片,最后流式展示带引用的报告。
+  React 聊天界面 (CDN 零构建)
+  ===========================
+  - 通过 CDN 引入 React + Babel + Tailwind,浏览器内编译,无需 node 构建链。
+    面试谈资:"用 React 做组件化开发,同时通过 CDN 保持零构建的便捷,
+    降低别人跑起项目的门槛。"
+  - 通过 WebSocket 与后端双向通信:支持多轮对话、追问、深入指令。
+  - Agent 工作时,实时把规划/检索/发现/反思过程渲染在助手气泡内的"工作面板"。
 -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
 <style>
-  /* ---------- 设计变量(集中管理,呼应后端的"配置集中"思路) ---------- */
-  :root {
-    --bg: #0d1117;
-    --bg-elev: #161b22;
-    --bg-elev2: #1c2230;
-    --border: #2a3038;
-    --text: #e6edf3;
-    --text-dim: #8b949e;
-    --text-faint: #6e7681;
-    --accent: #f0a868;      /* 琥珀:主强调,用于"思考/进行中" */
-    --accent2: #5fb3c4;     /* 青:次强调,用于"完成/数据" */
-    --green: #5cba7d;
-    --red: #e5736b;
-    --mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
-    --serif: "Iowan Old Style", "Palatino Linotype", "Georgia", serif;
-    --sans: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  }
-
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.6;
-    /* 细微的网格纹理背景,增加"终端"氛围 */
-    background-image:
-      radial-gradient(circle at 15% 20%, rgba(240,168,104,0.04), transparent 40%),
-      radial-gradient(circle at 85% 80%, rgba(95,179,196,0.04), transparent 40%);
-    min-height: 100vh;
-  }
-
-  .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 24px 80px; }
-
-  /* ---------- 顶部标题 ---------- */
-  header { margin-bottom: 28px; }
-  .brand {
-    font-family: var(--mono);
-    font-size: 13px;
-    letter-spacing: 2px;
-    color: var(--accent);
-    text-transform: uppercase;
-    margin-bottom: 6px;
-  }
-  h1 {
-    font-family: var(--serif);
-    font-size: 34px;
-    font-weight: 600;
-    letter-spacing: -0.5px;
-  }
-  .subtitle { color: var(--text-dim); font-size: 15px; margin-top: 4px; }
-
-  /* ---------- 搜索输入区 ---------- */
-  .composer {
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 18px;
-    margin-bottom: 24px;
-    box-shadow: 0 8px 30px rgba(0,0,0,0.3);
-  }
-  .composer textarea {
-    width: 100%;
-    background: transparent;
-    border: none;
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 17px;
-    resize: none;
-    outline: none;
-    min-height: 52px;
-  }
-  .composer textarea::placeholder { color: var(--text-faint); }
-
-  .composer-bottom {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-top: 12px;
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-  .knobs { display: flex; gap: 16px; flex-wrap: wrap; }
-  .knob { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
-  .knob label { font-family: var(--mono); }
-  .knob input {
-    width: 52px;
-    background: var(--bg-elev2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    padding: 4px 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    text-align: center;
-  }
-
-  button.run {
-    background: var(--accent);
-    color: #1a1208;
-    border: none;
-    border-radius: 9px;
-    padding: 10px 22px;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.2s;
-  }
-  button.run:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(240,168,104,0.3); }
-  button.run:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  /* ---------- 阶段进度条 ---------- */
-  .phases { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
-  .phase-pill {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.5px;
-    padding: 6px 12px;
-    border-radius: 20px;
-    border: 1px solid var(--border);
-    color: var(--text-faint);
-    transition: all 0.3s;
-  }
-  .phase-pill.active {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: rgba(240,168,104,0.08);
-    animation: pulse 1.6s ease-in-out infinite;
-  }
-  .phase-pill.done { color: var(--green); border-color: rgba(92,186,125,0.4); }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
-
-  /* ---------- 主体两栏 ---------- */
-  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
-  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
-
-  .panel {
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    overflow: hidden;
-  }
-  .panel-head {
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--border);
-    font-family: var(--mono);
-    font-size: 12px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .panel-body { padding: 16px 18px; max-height: 560px; overflow-y: auto; }
-
-  /* ---------- 子问题卡片 ---------- */
-  .subq {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    margin-bottom: 12px;
-    overflow: hidden;
-    transition: border-color 0.3s;
-  }
-  .subq.active { border-color: var(--accent); }
-  .subq.done { border-color: rgba(95,179,196,0.4); }
-  .subq-title {
-    padding: 11px 14px;
-    font-size: 14px;
-    font-weight: 500;
-    background: var(--bg-elev2);
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-  }
-  .subq-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--text-faint); margin-top: 7px; flex-shrink: 0;
-  }
-  .subq.active .subq-dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
-  .subq.done .subq-dot { background: var(--accent2); }
-  .subq-meta { font-family: var(--mono); font-size: 11px; color: var(--text-faint); padding: 2px 14px 0; }
-  .finding {
-    padding: 9px 14px 9px 22px;
-    font-size: 13px;
-    color: var(--text-dim);
-    border-top: 1px solid var(--border);
-    position: relative;
-  }
-  .finding::before {
-    content: "›"; position: absolute; left: 10px; color: var(--accent2);
-  }
-  .finding a { color: var(--accent2); text-decoration: none; font-size: 11px; font-family: var(--mono); }
-  .finding a:hover { text-decoration: underline; }
-  .search-line {
-    font-family: var(--mono); font-size: 11px; color: var(--accent);
-    padding: 6px 14px; border-top: 1px solid var(--border); opacity: 0.85;
-  }
-
-  /* ---------- 日志流 ---------- */
-  .log-stream { font-family: var(--mono); font-size: 12px; line-height: 1.8; }
-  .log-line { color: var(--text-dim); white-space: pre-wrap; word-break: break-word; }
-  .log-line.cost { color: var(--accent2); }
-
-  /* ---------- 报告 ---------- */
-  #reportPanel { grid-column: 1 / -1; display: none; }
-  .report-body {
-    font-family: var(--serif);
-    font-size: 16px;
-    line-height: 1.85;
-    max-height: none;
-    color: #d4dbe2;
-  }
-  .report-body h1, .report-body h2, .report-body h3 {
-    font-family: var(--sans); color: var(--text); margin: 22px 0 10px;
-  }
-  .report-body h2 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
-  .report-body p { margin: 10px 0; }
-  .report-body sup.cite {
-    color: var(--accent); font-family: var(--mono); font-size: 11px;
-    cursor: pointer; padding: 0 1px;
-  }
-  .sources { margin-top: 8px; }
-  .source-item {
-    font-size: 13px; padding: 8px 0; border-top: 1px solid var(--border);
-    display: flex; gap: 10px;
-  }
-  .source-num { font-family: var(--mono); color: var(--accent); flex-shrink: 0; }
-  .source-item a { color: var(--accent2); text-decoration: none; word-break: break-all; }
-  .source-item a:hover { text-decoration: underline; }
-
-  /* ---------- 成本徽章 ---------- */
-  .cost-badge {
-    font-family: var(--mono); font-size: 11px; color: var(--accent2);
-    background: rgba(95,179,196,0.1); padding: 3px 8px; border-radius: 6px;
-  }
-
-  .empty-hint { color: var(--text-faint); font-size: 13px; font-style: italic; }
-  .banner {
-    background: rgba(229,115,107,0.12); border: 1px solid rgba(229,115,107,0.4);
-    color: #f0b5b0; padding: 10px 14px; border-radius: 10px; font-size: 13px;
-    margin-bottom: 18px; display: none;
-  }
+  :root { --bg:#0d1117; --accent:#f0a868; --accent2:#5fb3c4; }
+  body { background:#0d1117; margin:0; font-family:-apple-system,"Segoe UI","PingFang SC",sans-serif; }
+  ::-webkit-scrollbar { width:8px; } ::-webkit-scrollbar-thumb { background:#2a3038; border-radius:4px; }
+  .serif { font-family:"Iowan Old Style","Palatino Linotype",Georgia,serif; }
+  .mono { font-family:"SF Mono","JetBrains Mono",Consolas,monospace; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  .pulse { animation:pulse 1.5s ease-in-out infinite; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+  .fade-in { animation:fadeIn .3s ease; }
 </style>
+<script>
+  tailwind.config = { theme: { extend: { colors: {
+    bg:'#0d1117', elev:'#161b22', elev2:'#1c2230', edge:'#2a3038',
+    dim:'#8b949e', faint:'#6e7681', accent:'#f0a868', accent2:'#5fb3c4',
+    grn:'#5cba7d', red:'#e5736b'
+  }}}};
+</script>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="brand">◆ Deep Research Agent</div>
-    <h1>深度研究助手</h1>
-    <div class="subtitle">规划 · 检索 · 反思 · 带引用成文 —— 实时观察 Agent 的每一步推理</div>
-  </header>
+<div id="root"></div>
 
-  <div class="banner" id="banner"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
 
-  <div class="composer">
-    <textarea id="question" rows="2" placeholder="输入一个研究问题，例如：对比 2024-2025 年主流开源向量数据库的优劣"></textarea>
-    <div class="composer-bottom">
-      <div class="knobs">
-        <div class="knob"><label>子问题上限</label><input type="number" id="maxSubq" value="4" min="1" max="8"></div>
-        <div class="knob"><label>每问搜索次数</label><input type="number" id="maxSearch" value="2" min="1" max="5"></div>
-        <div class="knob"><label>每次抓取数</label><input type="number" id="topK" value="4" min="1" max="8"></div>
-      </div>
-      <button class="run" id="runBtn">开始研究</button>
-    </div>
-  </div>
+const INTENT_LABEL = {
+  NEW_RESEARCH: { text: "新研究", color: "bg-accent/15 text-accent" },
+  DEEPEN:       { text: "深入", color: "bg-accent2/15 text-accent2" },
+  FOLLOW_UP:    { text: "追问", color: "bg-grn/15 text-grn" },
+  REFINE:       { text: "补充角度", color: "bg-accent2/15 text-accent2" },
+};
 
-  <div class="phases" id="phases">
-    <div class="phase-pill" data-phase="planning">① 规划</div>
-    <div class="phase-pill" data-phase="researching">② 检索</div>
-    <div class="phase-pill" data-phase="reflecting">③ 反思</div>
-    <div class="phase-pill" data-phase="writing">④ 成文</div>
-  </div>
+const PHASES = [
+  { key:"planning",    label:"规划" },
+  { key:"researching", label:"检索" },
+  { key:"reflecting",  label:"反思" },
+  { key:"writing",     label:"成文" },
+  { key:"answering",   label:"作答" },
+];
 
-  <div class="layout">
-    <!-- 左:子问题与发现 -->
-    <div class="panel">
-      <div class="panel-head"><span>研究进展 · Sub-questions</span></div>
-      <div class="panel-body" id="subqPanel">
-        <div class="empty-hint">尚未开始。输入问题后，这里会实时显示 Agent 规划出的子问题与收集到的发现。</div>
-      </div>
-    </div>
+function escapeHtml(s){ const d=document.createElement("div"); d.textContent=s||""; return d.innerHTML; }
 
-    <!-- 右:实时日志 -->
-    <div class="panel">
-      <div class="panel-head"><span>推理轨迹 · Trace</span></div>
-      <div class="panel-body log-stream" id="logPanel">
-        <div class="empty-hint">Agent 的实时思考日志会流式出现在这里。</div>
-      </div>
-    </div>
-
-    <!-- 报告(完成后出现,横跨两栏) -->
-    <div class="panel" id="reportPanel">
-      <div class="panel-head">
-        <span>研究报告 · Report</span>
-        <span class="cost-badge" id="costBadge"></span>
-      </div>
-      <div class="panel-body">
-        <div class="report-body" id="reportBody"></div>
-        <h3 style="font-family:var(--sans);margin-top:26px;font-size:15px;color:var(--text-dim);">参考来源</h3>
-        <div class="sources" id="sourcesList"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-/* ============================================================
-   前端逻辑:通过 SSE 接收后端事件,实时渲染。
-   核心是一个事件分发器 handleEvent(),按事件 type 更新对应 UI。
-   ============================================================ */
-
-const $ = (id) => document.getElementById(id);
-const subqEls = {};   // 子问题文本 -> DOM 元素,便于增量更新
-
-function setPhase(name) {
-  const order = ["planning", "researching", "reflecting", "writing"];
-  const idx = order.indexOf(name);
-  document.querySelectorAll(".phase-pill").forEach((el) => {
-    const p = el.dataset.phase;
-    const pIdx = order.indexOf(p);
-    el.classList.remove("active", "done");
-    if (pIdx < idx) el.classList.add("done");
-    else if (pIdx === idx) el.classList.add("active");
-  });
-}
-
-function addLog(message, isCost) {
-  const panel = $("logPanel");
-  if (panel.querySelector(".empty-hint")) panel.innerHTML = "";
-  const line = document.createElement("div");
-  line.className = "log-line" + (isCost ? " cost" : "");
-  line.textContent = message;
-  panel.appendChild(line);
-  panel.scrollTop = panel.scrollHeight;
-}
-
-function addSubq(text) {
-  const panel = $("subqPanel");
-  if (panel.querySelector(".empty-hint")) panel.innerHTML = "";
-  const el = document.createElement("div");
-  el.className = "subq";
-  el.innerHTML = `
-    <div class="subq-title"><span class="subq-dot"></span><span>${escapeHtml(text)}</span></div>
-    <div class="subq-meta"></div>`;
-  panel.appendChild(el);
-  subqEls[text] = el;
-  return el;
-}
-
-function escapeHtml(s) {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-function handleEvent(ev) {
-  switch (ev.type) {
-    case "start":
-      break;
-    case "phase":
-      setPhase(ev.name);
-      break;
-    case "plan":
-      ev.sub_questions.forEach(addSubq);
-      break;
-    case "subq_start": {
-      const el = subqEls[ev.sub_question];
-      if (el) el.classList.add("active");
-      break;
-    }
-    case "search": {
-      const el = subqEls[ev.sub_question];
-      if (el) {
-        const line = document.createElement("div");
-        line.className = "search-line";
-        line.textContent = `🔎 第${ev.round}轮检索：${ev.query}`;
-        el.appendChild(line);
-      }
-      break;
-    }
-    case "finding": {
-      const el = subqEls[ev.sub_question];
-      if (el) {
-        const f = document.createElement("div");
-        f.className = "finding";
-        f.innerHTML = `${escapeHtml(ev.content)} <a href="${escapeHtml(ev.url)}" target="_blank" rel="noopener">↗ 来源</a>`;
-        el.appendChild(f);
-      }
-      break;
-    }
-    case "subq_done": {
-      const el = subqEls[ev.sub_question];
-      if (el) {
-        el.classList.remove("active");
-        el.classList.add("done");
-        const reason = ev.reason === "enough" ? "信息充分" : "达搜索上限";
-        el.querySelector(".subq-meta").textContent = `✓ ${reason} · 收录 ${ev.count} 条`;
-      }
-      break;
-    }
-    case "gaps":
-      ev.gaps.forEach(addSubq);
-      break;
-    case "log":
-      addLog(ev.message, ev.message.includes("💰"));
-      break;
-    case "done":
-      renderReport(ev);
-      setPhase("__finished__");
-      document.querySelectorAll(".phase-pill").forEach((el) => el.classList.add("done"));
-      break;
-    case "error":
-      showBanner("研究出错：" + ev.message);
-      break;
-    case "end":
-      finish();
-      break;
-  }
-}
-
-/* 把报告里的 [n] 渲染成上标引用,并填充来源列表 */
-function renderReport(data) {
-  $("reportPanel").style.display = "block";
-  let html = escapeHtml(data.report || "");
-  // 简单的 markdown 标题处理
-  html = html
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  // [n] -> 上标引用
-  html = html.replace(/\[(\d+)\]/g, '<sup class="cite">[$1]</sup>');
-  // 段落
-  html = html.split(/\n\n+/).map((p) => {
-    if (p.startsWith("<h")) return p;
-    if (p.includes("参考来源")) return "";
-    return "<p>" + p.replace(/\n/g, "<br>") + "</p>";
+function renderRich(text){
+  let h = escapeHtml(text);
+  h = h.replace(/^### (.+)$/gm,'<h3 class="text-base font-semibold text-white mt-4 mb-1">$1</h3>')
+       .replace(/^## (.+)$/gm,'<h2 class="text-lg font-semibold text-white mt-5 mb-2 pb-1 border-b border-edge">$1</h2>')
+       .replace(/^# (.+)$/gm,'<h1 class="text-xl font-bold text-white mt-5 mb-2">$1</h1>');
+  h = h.replace(/\[(\d+)\]/g,'<sup class="mono text-accent text-[11px] cursor-default">[$1]</sup>');
+  h = h.split(/\n\n+/).map(p=>{
+    if(p.startsWith("<h")) return p;
+    if(p.includes("参考来源")) return "";
+    return '<p class="my-2 leading-relaxed">'+p.replace(/\n/g,"<br>")+'</p>';
   }).join("");
-  $("reportBody").innerHTML = html;
-
-  // 来源列表
-  const list = $("sourcesList");
-  list.innerHTML = "";
-  (data.sources || []).forEach((s, i) => {
-    const item = document.createElement("div");
-    item.className = "source-item";
-    item.innerHTML = `<span class="source-num">[${i + 1}]</span>
-      <span>${escapeHtml(s.title)} — <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.url)}</a></span>`;
-    list.appendChild(item);
-  });
-
-  // 成本徽章
-  const u = data.usage || {};
-  $("costBadge").textContent = `${u.calls || 0} 次调用 · ${u.total_tokens || 0} tokens`;
-  $("reportPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+  return h;
 }
 
-function showBanner(msg) {
-  const b = $("banner");
-  b.textContent = msg;
-  b.style.display = "block";
+function WorkPanel({ work }){
+  const [open, setOpen] = useState(true);
+  if(!work || (!work.subqs.length && !work.phase)) return null;
+  return (
+    <div className="mt-2 border border-edge rounded-xl overflow-hidden bg-bg/60">
+      <button onClick={()=>setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[11px] mono tracking-wide text-dim hover:text-white">
+        <span>◆ Agent 工作过程</span>
+        <div className="flex gap-1.5 items-center">
+          {PHASES.filter(p=>work.seenPhases.has(p.key)).map(p=>(
+            <span key={p.key} className={"px-1.5 py-0.5 rounded "+(work.phase===p.key?"bg-accent/20 text-accent pulse":"text-faint")}>{p.label}</span>
+          ))}
+          <span>{open?"▾":"▸"}</span>
+        </div>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-2">
+          {work.subqs.map((sq,i)=>(
+            <div key={i} className={"border rounded-lg overflow-hidden "+(sq.done?"border-accent2/40":sq.active?"border-accent":"border-edge")}>
+              <div className="px-3 py-2 text-[13px] bg-elev2 flex gap-2 items-start">
+                <span className={"w-2 h-2 rounded-full mt-1.5 flex-shrink-0 "+(sq.done?"bg-accent2":sq.active?"bg-accent":"bg-faint")} />
+                <span className="text-gray-200">{sq.text}</span>
+              </div>
+              {sq.queries.map((q,j)=>(
+                <div key={j} className="px-3 py-1.5 text-[11px] mono text-accent border-t border-edge">🔎 {q}</div>
+              ))}
+              {sq.findings.map((f,j)=>(
+                <div key={j} className="px-3 py-1.5 text-[12px] text-dim border-t border-edge">
+                  › {f.content} <a href={f.url} target="_blank" className="text-accent2 mono text-[10px]">↗来源</a>
+                </div>
+              ))}
+              {sq.done && <div className="px-3 py-1 text-[10px] mono text-faint border-t border-edge">✓ {sq.reason==="enough"?"信息充分":"达搜索上限"} · {sq.findings.length} 条</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
-let running = false;
-function finish() {
-  running = false;
-  $("runBtn").disabled = false;
-  $("runBtn").textContent = "开始研究";
+function MessageBubble({ msg }){
+  if(msg.role==="user"){
+    return (
+      <div className="flex justify-end fade-in">
+        <div className="max-w-[80%] bg-accent text-[#1a1208] rounded-2xl rounded-br-sm px-4 py-2.5 text-[15px]">
+          {msg.content}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex justify-start fade-in">
+      <div className="max-w-[88%] w-full">
+        {msg.intent && (
+          <span className={"inline-block mb-1.5 px-2 py-0.5 rounded text-[10px] mono "+(INTENT_LABEL[msg.intent]?.color||"bg-elev2 text-dim")}>
+            {INTENT_LABEL[msg.intent]?.text||msg.intent}
+          </span>
+        )}
+        <WorkPanel work={msg.work} />
+        {msg.content && (
+          <div className={"mt-2 rounded-2xl rounded-bl-sm px-4 py-3 bg-elev border border-edge "+(msg.isReport?"serif text-[15px] text-gray-300":"text-[15px] text-gray-200")}
+               dangerouslySetInnerHTML={{__html: renderRich(msg.content)}} />
+        )}
+        {msg.sources && msg.sources.length>0 && (
+          <details className="mt-1.5 text-[12px]">
+            <summary className="cursor-pointer text-dim mono">参考来源 ({msg.sources.length})</summary>
+            <div className="mt-1 space-y-1">
+              {msg.sources.map((s,i)=>(
+                <div key={i} className="flex gap-2"><span className="mono text-accent">[{i+1}]</span>
+                  <a href={s.url} target="_blank" className="text-accent2 hover:underline break-all">{s.title}</a></div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </div>
+  );
 }
 
-async function startResearch() {
-  if (running) return;
-  const question = $("question").value.trim();
-  if (!question) { showBanner("请先输入研究问题。"); return; }
+function App(){
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [warn, setWarn] = useState("");
+  const wsRef = useRef(null);
+  const sessionRef = useRef(null);
+  const scrollRef = useRef(null);
+  const draftRef = useRef(null);
 
-  // 重置 UI
-  running = true;
-  $("banner").style.display = "none";
-  $("runBtn").disabled = true;
-  $("runBtn").textContent = "研究中…";
-  $("subqPanel").innerHTML = '<div class="empty-hint">规划中…</div>';
-  $("logPanel").innerHTML = "";
-  $("reportPanel").style.display = "none";
-  Object.keys(subqEls).forEach((k) => delete subqEls[k]);
+  useEffect(()=>{ scrollRef.current?.scrollIntoView({behavior:"smooth"}); }, [messages]);
 
-  const body = {
-    question,
-    max_subquestions: parseInt($("maxSubq").value) || 4,
-    max_searches_per_subq: parseInt($("maxSearch").value) || 2,
-    results_per_search: parseInt($("topK").value) || 4,
-  };
+  useEffect(()=>{
+    fetch("/api/health").then(r=>r.json()).then(h=>{
+      if(!h.llm_configured) setWarn("⚠️ 后端未检测到 API key，请在 .env 配置 OPENAI_API_KEY 后重启。");
+    }).catch(()=>{});
+    connect();
+    return ()=> wsRef.current?.close();
+  }, []);
 
-  try {
-    // 用 fetch + ReadableStream 解析 SSE(比 EventSource 更灵活,支持 POST)
-    const resp = await fetch("/api/research", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+  function connect(){
+    const proto = location.protocol==="https:"?"wss":"ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = ()=> setConnected(true);
+    ws.onclose = ()=> setConnected(false);
+    ws.onmessage = (e)=> handleEvent(JSON.parse(e.data));
+    wsRef.current = ws;
+  }
+
+  function updateDraft(fn){
+    setMessages(prev=>{
+      const next=[...prev];
+      const idx = next.findIndex(m=>m._id===draftRef.current);
+      if(idx>=0){ next[idx]={...next[idx]}; fn(next[idx]); }
+      return next;
     });
-    if (!resp.ok) throw new Error("服务器返回 " + resp.status);
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      // SSE 以 \n\n 分隔消息
-      const parts = buf.split("\n\n");
-      buf = parts.pop();
-      for (const part of parts) {
-        const line = part.trim();
-        if (line.startsWith("data:")) {
-          const json = line.slice(5).trim();
-          try { handleEvent(JSON.parse(json)); } catch (e) { /* 忽略半包 */ }
-        }
-      }
-    }
-  } catch (err) {
-    showBanner("连接失败：" + err.message + "（请确认后端已启动且已配置 API key）");
-  } finally {
-    finish();
   }
+  function ensureWork(m){ if(!m.work) m.work={phase:null,seenPhases:new Set(),subqs:[]}; return m.work; }
+  function findSubq(work, text){ return work.subqs.find(s=>s.text===text); }
+
+  function handleEvent(ev){
+    switch(ev.type){
+      case "session": sessionRef.current=ev.session_id; break;
+      case "intent": updateDraft(m=>{ m.intent=ev.intent; }); break;
+      case "phase": updateDraft(m=>{ const w=ensureWork(m); w.phase=ev.name; w.seenPhases.add(ev.name); }); break;
+      case "plan": updateDraft(m=>{ const w=ensureWork(m); ev.sub_questions.forEach(t=>{ if(!findSubq(w,t)) w.subqs.push({text:t,active:false,done:false,queries:[],findings:[],reason:null}); }); }); break;
+      case "subq_start": updateDraft(m=>{ const s=findSubq(ensureWork(m),ev.sub_question); if(s)s.active=true; }); break;
+      case "search": updateDraft(m=>{ const s=findSubq(ensureWork(m),ev.sub_question); if(s)s.queries.push(ev.query); }); break;
+      case "finding": updateDraft(m=>{ const s=findSubq(ensureWork(m),ev.sub_question); if(s)s.findings.push({content:ev.content,url:ev.url,title:ev.title}); }); break;
+      case "subq_done": updateDraft(m=>{ const s=findSubq(ensureWork(m),ev.sub_question); if(s){s.active=false;s.done=true;s.reason=ev.reason;} }); break;
+      case "log": break;
+      case "turn_done":
+        updateDraft(m=>{ m.content=ev.answer; m.isReport=ev.is_report; m.sources=ev.sources; if(m.work)m.work.phase=null; });
+        setBusy(false); draftRef.current=null; break;
+      case "error":
+        updateDraft(m=>{ m.content="⚠️ "+ev.message; });
+        setBusy(false); draftRef.current=null; break;
+    }
+  }
+
+  const send = useCallback(()=>{
+    const text=input.trim();
+    if(!text||busy||!connected) return;
+    const userMsg={_id:Date.now()+"u", role:"user", content:text};
+    const draftId=Date.now()+"a";
+    draftRef.current=draftId;
+    const draft={_id:draftId, role:"assistant", content:"", work:null, intent:null, sources:null};
+    setMessages(prev=>[...prev, userMsg, draft]);
+    setInput(""); setBusy(true);
+    wsRef.current.send(JSON.stringify({ message:text, session_id:sessionRef.current }));
+  }, [input, busy, connected]);
+
+  const empty = messages.length===0;
+
+  return (
+    <div className="max-w-3xl mx-auto min-h-screen flex flex-col px-4">
+      <header className="py-4 flex items-center justify-between border-b border-edge sticky top-0 bg-bg/90 backdrop-blur z-10">
+        <div>
+          <div className="mono text-[11px] tracking-[2px] text-accent uppercase">◆ Deep Research Agent</div>
+          <div className="serif text-xl text-white">深度研究助手</div>
+        </div>
+        <span className={"mono text-[11px] px-2 py-1 rounded "+(connected?"text-grn bg-grn/10":"text-red bg-red/10")}>
+          {connected?"● 已连接":"○ 连接中"}
+        </span>
+      </header>
+
+      {warn && <div className="mt-3 text-[13px] text-red bg-red/10 border border-red/30 rounded-lg px-3 py-2">{warn}</div>}
+
+      <div className="flex-1 py-5 space-y-4 overflow-y-auto">
+        {empty && (
+          <div className="text-center mt-20 text-dim">
+            <div className="serif text-2xl text-white mb-2">开始一段研究对话</div>
+            <p className="text-[14px] mb-6">输入一个研究问题，出报告后可以继续追问、要求深入某点、或补充新角度。</p>
+            <div className="flex flex-wrap gap-2 justify-center max-w-lg mx-auto">
+              {["对比 2024-2025 主流开源向量数据库的优劣","RAG 常见失败模式及缓解","LLM 推理加速技术对比"].map(s=>(
+                <button key={s} onClick={()=>setInput(s)}
+                  className="text-[13px] px-3 py-1.5 rounded-full border border-edge text-dim hover:border-accent hover:text-accent transition">{s}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map(m=> <MessageBubble key={m._id} msg={m} />)}
+        <div ref={scrollRef} />
+      </div>
+
+      <div className="sticky bottom-0 bg-bg/90 backdrop-blur pb-4 pt-2">
+        <div className="border border-edge rounded-2xl bg-elev p-2 flex items-end gap-2">
+          <textarea value={input} onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();} }}
+            rows={1} placeholder={busy?"Agent 正在研究中…":"输入研究问题，或针对上面的报告追问/要求深入…"}
+            disabled={busy}
+            className="flex-1 bg-transparent text-white text-[15px] px-2 py-2 outline-none resize-none placeholder:text-faint disabled:opacity-50" />
+          <button onClick={send} disabled={busy||!connected||!input.trim()}
+            className="bg-accent text-[#1a1208] font-semibold rounded-xl px-4 py-2 text-[14px] disabled:opacity-40 hover:brightness-110 transition">
+            {busy?"研究中":"发送"}
+          </button>
+        </div>
+        <div className="text-center text-[11px] text-faint mt-1.5 mono">Enter 发送 · Shift+Enter 换行 · 支持多轮追问与深入</div>
+      </div>
+    </div>
+  );
 }
 
-$("runBtn").addEventListener("click", startResearch);
-$("question").addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") startResearch();
-});
-
-// 启动时检查后端是否配置好 key
-fetch("/api/health").then((r) => r.json()).then((h) => {
-  if (!h.llm_configured) {
-    showBanner("⚠️ 后端尚未检测到 API key。请在 .env 中配置 OPENAI_API_KEY 后重启服务。");
-  }
-}).catch(() => {});
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
 </html>
